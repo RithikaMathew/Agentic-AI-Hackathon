@@ -1,0 +1,19 @@
+# Ignore backend environment file
+/backend/.env
+
+node_modules/
+popup/dist/
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+backend/.venv/
+# local secrets
+backend/.env
+*.env
+node_modules/
+dist/
+.DS_Store
+.vscode/

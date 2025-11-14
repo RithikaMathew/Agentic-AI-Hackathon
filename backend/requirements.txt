@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+openai
+pydantic
+requests
+# Optional: langgraph (if available in your environment). If you want real LangGraph integration install it.
+langgraph
+python-dotenv
