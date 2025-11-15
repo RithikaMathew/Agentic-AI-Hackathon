@@ -48,7 +48,10 @@
           restoreChatMessages(state.chatMessages);
         }
         
-        if (steps.length > 0) {
+        // Only show steps if they were triggered by user interaction (not on page load)
+        // Check if there are actual chat messages indicating user interaction
+        const hasUserMessages = state.chatMessages && state.chatMessages.some(msg => msg.from === 'user');
+        if (steps.length > 0 && hasUserMessages) {
           console.log('[FAU Assistant] Restored guidance state');
           setTimeout(() => showCurrentStep(), 1000);
         }
@@ -210,23 +213,53 @@
         }
       }
       
-      /* Message bubble - modern design */
+      /* Message bubble - modern design with draggable header */
       .fau-message-overlay {
         position: fixed;
         top: 20px;
         right: 20px;
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
         color: white;
-        padding: 16px 20px;
+        padding: 0;
         border-radius: 12px;
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
         z-index: 2147483647;
         max-width: 400px;
+        min-width: 300px;
         font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         font-size: 14px;
         line-height: 1.5;
         animation: fau-slide-in 0.3s ease-out;
         pointer-events: auto;
+        resize: both;
+        overflow: auto;
+      }
+      
+      .fau-message-overlay .header {
+        background: rgba(0, 0, 0, 0.1);
+        padding: 8px 16px;
+        cursor: move;
+        border-radius: 12px 12px 0 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-weight: 600;
+        font-size: 12px;
+        opacity: 0.8;
+      }
+      
+      .fau-message-overlay .content {
+        padding: 16px 20px;
+      }
+      
+      .fau-message-overlay .resize-handle {
+        position: absolute;
+        bottom: 2px;
+        right: 2px;
+        width: 16px;
+        height: 16px;
+        cursor: se-resize;
+        background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M16 16V10l-6 6h6zM16 6L6 16h4l6-6V6zM16 2L2 16h4L16 6V2z" fill="%23ffffff" opacity="0.5"/></svg>');
       }
       
       @keyframes fau-slide-in {
@@ -286,6 +319,8 @@
       #fau-assistant-chat .msg .bubble { display:inline-block; padding:10px 14px; border-radius:16px; max-width:85%; word-wrap:break-word; }
       #fau-assistant-chat .msg.user .bubble { background: linear-gradient(135deg, #0b63ce 0%, #1e88e5 100%); color:#fff; }
       #fau-assistant-chat .msg.assistant .bubble { background:#fff; border:1px solid #e0e6ed; color:#374151; }
+      #fau-assistant-chat .msg .bubble a { color: #0b63ce; text-decoration: underline; font-weight: 500; }
+      #fau-assistant-chat .msg.user .bubble a { color: #fff; text-decoration: underline; font-weight: 600; }
       #fau-assistant-chat .footer-resize { width:16px; height:16px; position:absolute; right:2px; bottom:2px; cursor:se-resize; background:url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><path d="M16 16V10l-6 6h6zM16 6L6 16h4l6-6V6zM16 2L2 16h4L16 6V2z" fill="%23cbd5e1"/></svg>'); }
     `;
     document.head.appendChild(style);
@@ -657,12 +692,35 @@
       const currentUrl = window.location.href;
       const instruction = message || '';
       
-      // Handle URL navigation steps
-      if ((instruction.toLowerCase().includes('go to') || instruction.toLowerCase().includes('navigate to')) && 
-          (instruction.toLowerCase().includes('myfau') || instruction.toLowerCase().includes('portal') || instruction.toLowerCase().includes('student portal'))) {
+      // Handle URL navigation steps with clickable links
+      if (instruction.toLowerCase().includes('go to') || instruction.toLowerCase().includes('navigate to')) {
+        let linkUrl = '';
+        let linkText = '';
+        
+        if (instruction.toLowerCase().includes('myfau') || instruction.toLowerCase().includes('portal') || instruction.toLowerCase().includes('student portal')) {
+          linkUrl = 'https://myfau.fau.edu';
+          linkText = 'MyFAU Portal';
+        } else if (instruction.toLowerCase().includes('fau website') || instruction.toLowerCase().includes('fau.edu')) {
+          linkUrl = 'https://www.fau.edu';
+          linkText = 'FAU Website';
+        } else if (instruction.toLowerCase().includes('financial aid')) {
+          linkUrl = 'https://www.fau.edu/finaid';
+          linkText = 'FAU Financial Aid';
+        } else if (instruction.toLowerCase().includes('career') || instruction.toLowerCase().includes('handshake')) {
+          linkUrl = 'https://fau.joinhandshake.com';
+          linkText = 'Handshake Career Portal';
+        } else if (instruction.toLowerCase().includes('housing')) {
+          linkUrl = 'https://www.fau.edu/housing';
+          linkText = 'FAU Housing';
+        } else if (instruction.toLowerCase().includes('library')) {
+          linkUrl = 'https://library.fau.edu';
+          linkText = 'FAU Libraries';
+        }
+        
+        const linkHtml = linkUrl ? `<br><br><a href="${linkUrl}" target="_blank" style="color: #0b63ce; text-decoration: underline; font-weight: 600;">→ Open ${linkText}</a>` : '';
         
         showFloatingMessage(
-          `Step ${currentStepIndex + 1}/${steps.length}: ${instruction}\n\nThis is a website navigation step. Please navigate to MyFAU portal manually, then click Next to continue.`,
+          `Step ${currentStepIndex + 1}/${steps.length}: ${instruction}${linkHtml}\n\nClick the link above to navigate, then click Next to continue.`,
           false
         );
         return true;
@@ -718,18 +776,23 @@
       const primaryElement = elements[0];
       highlightedElement = primaryElement;
 
-      // Scroll primary element into view
+      // Scroll primary element into view FIRST, then show message
       primaryElement.scrollIntoView({
         behavior: CONFIG.autoScrollBehavior,
         block: 'center',
         inline: 'nearest'
       });
+      
+      // Wait for scroll to complete before showing message
+      setTimeout(() => {
+        // Show message overlay with uncertainty indicator
+        const uncertaintyNote = isMultiple ? 
+          `\n\n⚠️ Found ${elements.length} similar elements highlighted in orange. Please select the correct one.` : 
+          (isUncertain ? '\n\n⚠️ Low confidence match. Please verify this is correct.' : '');
+        showMessageOverlay(message || `Step ${currentStepIndex + 1}`, primaryElement, uncertaintyNote);
+      }, 300);
 
-      // Show message overlay with uncertainty indicator
-      const uncertaintyNote = isMultiple ? 
-        `\n\n⚠️ Found ${elements.length} similar elements highlighted in orange. Please select the correct one.` : 
-        (isUncertain ? '\n\n⚠️ Low confidence match. Please verify this is correct.' : '');
-      showMessageOverlay(message || `Step ${currentStepIndex + 1}`, primaryElement, uncertaintyNote);
+
 
       // Set up click handler for ALL highlighted elements
       elements.forEach(element => {
@@ -767,12 +830,19 @@
       `<span class="step-number">Step ${currentStepIndex + 1}/${steps.length}</span>` : '';
     
     messageOverlay.innerHTML = `
-      <div>${stepInfo}${message}${uncertaintyNote}</div>
-      <div class="controls">
-        ${currentStepIndex > 0 ? '<button id="fau-prev-btn">Previous</button>' : ''}
-        <button id="fau-skip-btn">Skip</button>
-        ${currentStepIndex < steps.length - 1 ? '<button id="fau-next-btn">Next</button>' : '<button id="fau-done-btn">Done</button>'}
+      <div class="header">
+        <div>📍 Step Guide</div>
+        <div>⋮⋮</div>
       </div>
+      <div class="content">
+        <div>${stepInfo}${message}${uncertaintyNote}</div>
+        <div class="controls">
+          ${currentStepIndex > 0 ? '<button id="fau-prev-btn">Previous</button>' : ''}
+          <button id="fau-skip-btn">Skip</button>
+          ${currentStepIndex < steps.length - 1 ? '<button id="fau-next-btn">Next</button>' : '<button id="fau-done-btn">Done</button>'}
+        </div>
+      </div>
+      <div class="resize-handle"></div>
     `;
     
     if (document.body) {
@@ -782,8 +852,60 @@
       return;
     }
 
-    // Position overlay (fixed top-right by default, can be enhanced to position near element)
-    // For element-relative positioning, calculate based on element.getBoundingClientRect()
+    // Make draggable
+    const header = messageOverlay.querySelector('.header');
+    let isDragging = false, dragOffsetX = 0, dragOffsetY = 0;
+    
+    header.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      const rect = messageOverlay.getBoundingClientRect();
+      dragOffsetX = e.clientX - rect.left;
+      dragOffsetY = e.clientY - rect.top;
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      messageOverlay.style.left = Math.max(8, e.clientX - dragOffsetX) + 'px';
+      messageOverlay.style.top = Math.max(8, e.clientY - dragOffsetY) + 'px';
+      messageOverlay.style.right = 'auto';
+      messageOverlay.style.bottom = 'auto';
+    });
+    
+    document.addEventListener('mouseup', () => {
+      isDragging = false;
+      document.body.style.userSelect = '';
+    });
+
+    // Make resizable
+    const resizeHandle = messageOverlay.querySelector('.resize-handle');
+    let isResizing = false, startWidth = 0, startHeight = 0, startX = 0, startY = 0;
+    
+    resizeHandle.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      const rect = messageOverlay.getBoundingClientRect();
+      startWidth = rect.width;
+      startHeight = rect.height;
+      startX = e.clientX;
+      startY = e.clientY;
+      document.body.style.userSelect = 'none';
+      e.stopPropagation();
+      e.preventDefault();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      messageOverlay.style.width = Math.max(250, startWidth + dx) + 'px';
+      messageOverlay.style.height = Math.max(120, startHeight + dy) + 'px';
+    });
+    
+    document.addEventListener('mouseup', () => {
+      isResizing = false;
+      document.body.style.userSelect = '';
+    });
 
     // Attach button handlers
     const prevBtn = messageOverlay.querySelector('#fau-prev-btn');
@@ -806,11 +928,18 @@
     }
     
     messageOverlay.innerHTML = `
-      <div>${message}</div>
-      <div class="controls">
-        ${currentStepIndex > 0 ? '<button id="fau-prev-btn">Previous</button>' : ''}
-        ${currentStepIndex < steps.length - 1 ? '<button id="fau-next-btn">Next</button>' : '<button id="fau-done-btn">Done</button>'}
+      <div class="header">
+        <div>📍 Step Guide</div>
+        <div>⋮⋮</div>
       </div>
+      <div class="content">
+        <div>${message}</div>
+        <div class="controls">
+          ${currentStepIndex > 0 ? '<button id="fau-prev-btn">Previous</button>' : ''}
+          ${currentStepIndex < steps.length - 1 ? '<button id="fau-next-btn">Next</button>' : '<button id="fau-done-btn">Done</button>'}
+        </div>
+      </div>
+      <div class="resize-handle"></div>
     `;
     
     if (document.body) {
@@ -819,6 +948,61 @@
       console.error('[FAU Assistant] document.body is null, cannot append overlay');
       return;
     }
+
+    // Make draggable (same as showMessageOverlay)
+    const header = messageOverlay.querySelector('.header');
+    let isDragging = false, dragOffsetX = 0, dragOffsetY = 0;
+    
+    header.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      const rect = messageOverlay.getBoundingClientRect();
+      dragOffsetX = e.clientX - rect.left;
+      dragOffsetY = e.clientY - rect.top;
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      messageOverlay.style.left = Math.max(8, e.clientX - dragOffsetX) + 'px';
+      messageOverlay.style.top = Math.max(8, e.clientY - dragOffsetY) + 'px';
+      messageOverlay.style.right = 'auto';
+      messageOverlay.style.bottom = 'auto';
+    });
+    
+    document.addEventListener('mouseup', () => {
+      isDragging = false;
+      document.body.style.userSelect = '';
+    });
+
+    // Make resizable
+    const resizeHandle = messageOverlay.querySelector('.resize-handle');
+    let isResizing = false, startWidth = 0, startHeight = 0, startX = 0, startY = 0;
+    
+    resizeHandle.addEventListener('mousedown', (e) => {
+      isResizing = true;
+      const rect = messageOverlay.getBoundingClientRect();
+      startWidth = rect.width;
+      startHeight = rect.height;
+      startX = e.clientX;
+      startY = e.clientY;
+      document.body.style.userSelect = 'none';
+      e.stopPropagation();
+      e.preventDefault();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isResizing) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      messageOverlay.style.width = Math.max(250, startWidth + dx) + 'px';
+      messageOverlay.style.height = Math.max(120, startHeight + dy) + 'px';
+    });
+    
+    document.addEventListener('mouseup', () => {
+      isResizing = false;
+      document.body.style.userSelect = '';
+    });
 
     const prevBtn = messageOverlay.querySelector('#fau-prev-btn');
     const nextBtn = messageOverlay.querySelector('#fau-next-btn');
@@ -1102,8 +1286,19 @@
       const div = document.createElement('div');
       div.className = 'msg ' + (from === 'user' ? 'user' : 'assistant');
       const b = document.createElement('div'); 
-      b.className = 'bubble'; 
-      b.textContent = text;
+      b.className = 'bubble';
+      
+      // Convert URLs to clickable links
+      const urlRegex = /(https?:\/\/[^\s]+)/g;
+      if (text.match(urlRegex)) {
+        // Text contains URLs - use innerHTML with sanitization
+        const safeText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        b.innerHTML = safeText.replace(urlRegex, '<a href="$1" target="_blank" style="color: inherit; text-decoration: underline;">$1</a>');
+      } else {
+        // No URLs - use textContent for safety
+        b.textContent = text;
+      }
+      
       div.appendChild(b); 
       container.appendChild(div); 
       // Force scroll to bottom
