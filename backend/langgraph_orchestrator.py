@@ -20,258 +20,261 @@ try:
 except Exception:
     HAS_LANGGRAPH = False
 
-# Configuration for Knowledge Base API
-KB_API_URL = os.environ.get('KB_API_URL', 'https://api.example.com')  # Replace with actual KB API URL
-KB_API_KEY = os.environ.get('KB_API_KEY')  # Set your KB API key
-KB_COLLECTION_NAME = os.environ.get('KB_COLLECTION_NAME', 'fau_kb')
+# Configuration for FAU HPC API
+FAU_API_URL = os.environ.get('FAU_API_URL', 'https://chat.hpc.fau.edu/openai/chat/completions')
+FAU_API_KEY = os.environ.get('FAU_API_KEY', 'sk-6513a2c196d74796a79bc6c32cd426d2')
+FAU_MODEL = os.environ.get('FAU_MODEL', 'gemini-2.0-flash-lite')
 
-print(f"[DEBUG] KB_API_URL: {KB_API_URL}")
-print(f"[DEBUG] KB_API_KEY: {KB_API_KEY[:20] + '...' if KB_API_KEY else 'None'}")
-print(f"[DEBUG] KB_COLLECTION_NAME: {KB_COLLECTION_NAME}")
+print(f"[DEBUG] FAU_API_URL: {FAU_API_URL}")
+print(f"[DEBUG] FAU_API_KEY: {FAU_API_KEY[:20] + '...' if FAU_API_KEY else 'None'}")
+print(f"[DEBUG] FAU_MODEL: {FAU_MODEL}")
 
 
-def query_knowledge_base(query: str) -> str:
+def call_llm_directly(query: str) -> str:
     """
-    Query the knowledge base collection for FAU-specific information.
-    Returns the response content from the knowledge base.
+    Call the LLM directly using the OpenAI chat completions endpoint.
+    Returns the LLM response for generating steps.
     """
-    print(f"[DEBUG] query_knowledge_base called with: {query}")
+    print(f"[DEBUG] call_llm_directly called with: {query}")
     
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {KB_API_KEY}",
+        "Authorization": f"Bearer {FAU_API_KEY}",
     }
     
+    # Enhanced prompt with specific FAU knowledge and example format
+    system_prompt = """You are FAU Assistant, an expert guide for Florida Atlantic University students.
+
+Your job is to provide detailed, accurate step-by-step instructions for navigating FAU's systems.
+
+IMPORTANT: You MUST respond with ONLY valid JSON in this exact format:
+{
+  "summary": "Brief description of the task",
+  "steps": [
+    {"instruction": "Detailed step instruction", "target_text": "UI Element Text"},
+    {"instruction": "Next step instruction", "target_text": "Button/Link Text"}
+  ]
+}
+
+FAU SYSTEM KNOWLEDGE:
+- MyFAU Portal (https://myfau.fau.edu): Access Student Self Service, Registration, Student Account, Financial Aid
+- Registration: MyFAU → Student Self Service → Registration → Register for Classes
+- Tuition Payment: MyFAU → Student Self Service → Student Account → Make a Payment
+- Financial Aid: FAU Financial Aid website (https://www.fau.edu/finaid) → Apply for Aid
+- Career Services: FAU Career Center (https://www.fau.edu/career) → Handshake (https://fau.joinhandshake.com)
+- Housing: FAU Housing website (https://www.fau.edu/housing) → Apply for Housing
+- Transcripts: MyFAU → Student Self Service → Academic Records → Request Transcript
+- Health Services: Student Health Services (https://www.fau.edu/studenthealth) → Schedule Appointment
+- Parking: Parking Services (https://www.fau.edu/parking) → Purchase Permit
+- Library: FAU Libraries (https://library.fau.edu) → Search Resources
+- Advising: Academic Advising → Schedule Appointment
+
+TARGET_TEXT RULES:
+- Should be the exact text visible on buttons, links, or menu items
+- Examples: "Student Self Service", "Register for Classes", "Make a Payment", "Apply for Aid"
+- Keep it short and specific to what appears on screen
+
+INSTRUCTION RULES:
+- For website navigation steps, use format: "Go to the FAU website" or "Go to MyFAU portal"
+- The content script will automatically add clickable links for common FAU websites
+- Be specific about which website to visit
+
+IMPORTANT: Always provide at least 3-4 actionable steps. Never return empty steps. If you don't have specific information about a service, provide general navigation steps to find it on the FAU website.
+
+DO NOT include any explanation, markdown, or text outside the JSON object."""
+
     payload = {
-        "collection_names": [KB_COLLECTION_NAME],
-        "query": query,
-        "k": 5
+        "model": FAU_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": f"Provide step-by-step instructions for: {query}"
+            }
+        ]
     }
     
-    print(f"[DEBUG] Payload: {json.dumps(payload, indent=2)}")
+    print(f"[DEBUG] Calling LLM with enhanced prompt...")
     
     try:
-        url = f"{KB_API_URL}/api/v1/retrieval/query/collection"
-        print(f"[DEBUG] Making POST request to {url}")
-        resp = requests.post(url, json=payload, headers=headers, timeout=60)
+        print(f"[DEBUG] Making POST request to {FAU_API_URL}")
+        print(f"[DEBUG] Headers: Content-Type=application/json, Authorization=Bearer {FAU_API_KEY[:20]}...")
+        print(f"[DEBUG] Model: {FAU_MODEL}")
+        
+        resp = requests.post(FAU_API_URL, json=payload, headers=headers, timeout=60)
         print(f"[DEBUG] Response status: {resp.status_code}")
+        
+        # Print response body even on error to debug
+        if resp.status_code != 200:
+            print(f"[DEBUG] Error response body: {resp.text[:500]}")
         
         resp.raise_for_status()
         result = resp.json()
-        print(f"[DEBUG] Knowledge base query successful")
+        print(f"[DEBUG] LLM query successful")
         
-        # Extract the answer/content from the KB response
-        content = result.get('answer', result.get('content', result.get('response', '')))
-        return content
+        # Extract the response content from OpenAI format
+        if 'choices' in result and len(result['choices']) > 0:
+            content = result['choices'][0]['message']['content']
+            print(f"[DEBUG] Raw LLM response: {content[:500]}...")
+            return content
+        else:
+            raise RuntimeError("Invalid response format from LLM")
         
     except Exception as e:
-        print(f"[DEBUG] ❌ Knowledge base query failed: {e}")
-        raise RuntimeError(f"Knowledge base query failed: {e}")
+        print(f"[DEBUG] ❌ LLM query failed: {e}")
+        raise RuntimeError(f"LLM query failed: {e}")
 
 
-def orchestrate_via_knowledge_base(user_message: str) -> Dict[str, Any]:
+def orchestrate_via_llm(user_message: str) -> Dict[str, Any]:
     """
-    Query the knowledge base and convert response to structured steps.
+    Query the LLM and convert response to structured steps.
     Returns dict with keys: summary (str) and steps (list of {instruction, target_text})
     """
-    print(f"[DEBUG] orchestrate_via_knowledge_base called with: {user_message}")
+    print(f"[DEBUG] orchestrate_via_llm called with: {user_message}")
     
     try:
-        # Query the knowledge base for FAU-specific information
-        kb_response = query_knowledge_base(user_message)
-        print(f"[DEBUG] Knowledge base response: {kb_response[:200]}...")
+        # Query the LLM directly
+        llm_response = call_llm_directly(user_message)
+        print(f"[DEBUG] LLM response length: {len(llm_response)}")
         
-        # Convert KB response to structured steps
-        steps = parse_kb_response_to_steps(kb_response, user_message)
+        # Try to extract JSON from response
+        json_text = llm_response.strip()
         
-        return {
-            "summary": f"Steps for: {user_message}",
-            "steps": steps
-        }
+        # Look for JSON object if wrapped in markdown or extra text
+        if '```json' in json_text:
+            json_text = json_text.split('```json')[1].split('```')[0].strip()
+        elif '```' in json_text:
+            json_text = json_text.split('```')[1].split('```')[0].strip()
         
-    except Exception as e:
-        print(f"[DEBUG] ❌ Knowledge base orchestration failed: {e}")
-        # Fallback to predefined steps based on common queries
+        # Find JSON object boundaries
+        if '{' in json_text and '}' in json_text:
+            start = json_text.find('{')
+            end = json_text.rfind('}') + 1
+            json_text = json_text[start:end]
+        
+        # Parse JSON response
+        try:
+            result = json.loads(json_text)
+            
+            # Validate the structure
+            if 'steps' in result and isinstance(result['steps'], list):
+                valid_steps = []
+                for step in result['steps']:
+                    if isinstance(step, dict) and 'instruction' in step:
+                        if 'target_text' not in step:
+                            step['target_text'] = extract_target_text(step['instruction'])
+                        valid_steps.append(step)
+                
+                if valid_steps:
+                    print(f"[DEBUG] ✅ Successfully parsed {len(valid_steps)} steps from LLM")
+                    return {
+                        "summary": result.get('summary', f"Steps for: {user_message}"),
+                        "steps": valid_steps
+                    }
+            
+        except json.JSONDecodeError as je:
+            print(f"[DEBUG] ❌ JSON decode error: {je}")
+        
+        # Fallback to predefined steps
         return get_fallback_steps(user_message)
-
-
-def parse_kb_response_to_steps(kb_response: str, user_query: str) -> List[Dict[str, str]]:
-    """
-    Parse knowledge base response into clean UI steps.
-    """
-    steps = []
-    
-    try:
-        # Parse the KB response JSON
-        if isinstance(kb_response, str):
-            import json
-            kb_data = json.loads(kb_response)
-        else:
-            kb_data = kb_response
-            
-        # Extract documents from the response
-        documents = kb_data.get('documents', [[]])[0] if kb_data.get('documents') else []
         
-        if documents:
-            # Combine all document content
-            content = ' '.join(documents)
-            
-            # Extract step-by-step instructions from the content
-            steps = extract_steps_from_content(content)
-            
-        if not steps:
-            # Fallback to predefined steps based on query type
-            steps = get_predefined_steps(user_query)
-            
     except Exception as e:
-        print(f"[DEBUG] Error parsing KB response: {e}")
-        steps = get_predefined_steps(user_query)
-    
-    return steps
-
-
-def extract_steps_from_content(content: str) -> List[Dict[str, str]]:
-    """
-    Extract clean steps from KB content.
-    """
-    steps = []
-    
-    # Split content into lines and clean up
-    lines = [line.strip() for line in content.split('\n') if line.strip()]
-    
-    # Look for step-like patterns
-    step_keywords = ['select', 'click', 'choose', 'go to', 'navigate', 'enter', 'complete']
-    
-    for line in lines:
-        line_lower = line.lower()
-        
-        # Skip very short lines or lines that don't seem like instructions
-        if len(line) < 10:
-            continue
-            
-        # Check if line contains step-like keywords
-        if any(keyword in line_lower for keyword in step_keywords):
-            # Extract target text (usually the last meaningful word/phrase)
-            target_text = extract_target_text(line)
-            
-            steps.append({
-                "instruction": line,
-                "target_text": target_text
-            })
-    
-    # Limit to reasonable number of steps
-    return steps[:6]
+        print(f"[DEBUG] ❌ LLM orchestration failed: {e}")
+        return get_fallback_steps(user_message)
 
 
 def extract_target_text(instruction: str) -> str:
     """
     Extract likely UI target text from instruction.
     """
-    # Common FAU UI elements (more specific)
+    # Common FAU UI elements
     ui_patterns = [
-        'Student Services', 'Registration', 'Add or Drop Classes',
-        'Register for Classes', 'Plan Ahead', 'MyFAU', 'Student Portal',
-        'Financial Aid', 'Apply for Aid', 'FAFSA', 'Transcript',
-        'Academic Records', 'Next', 'Submit', 'Continue', 'Login',
-        'Click Here for Registration', 'Student Self Service',
-        'Add Course', 'Drop Course', 'Search Classes', 'Class Schedule'
+        'Student Self Service', 'Registration', 'Register for Classes',
+        'Student Account', 'Make a Payment', 'Financial Aid', 'Apply for Aid',
+        'FAFSA', 'Academic Records', 'Request Transcript', 'MyFAU',
+        'Student Portal', 'Career Center', 'Handshake', 'Housing', 'Apply'
     ]
     
     instruction_lower = instruction.lower()
     
     # Look for quoted text first
-    if '"' in instruction:
-        quoted = instruction.split('"')[1] if len(instruction.split('"')) > 1 else ''
-        if quoted:
-            return quoted
-    
-    # Look for "Click" or "Select" patterns
-    if 'click' in instruction_lower:
-        # Extract text after "click" or "click on"
-        parts = instruction_lower.split('click')
-        if len(parts) > 1:
-            after_click = parts[1].strip()
-            if after_click.startswith('on '):
-                after_click = after_click[3:].strip()
-            if after_click.startswith('the '):
-                after_click = after_click[4:].strip()
-            # Remove quotes and get first meaningful phrase
-            after_click = after_click.strip('"\'')
-            if after_click:
-                return after_click.split(' that ')[0].split(' to ')[0].title()
-    
-    if 'select' in instruction_lower:
-        parts = instruction_lower.split('select')
-        if len(parts) > 1:
-            after_select = parts[1].strip()
-            after_select = after_select.strip('"\'')
-            if after_select:
-                return after_select.split(' from ')[0].split(' in ')[0].title()
+    if '"' in instruction or "'" in instruction:
+        import re
+        quotes = re.findall(r'["\'](.*?)["\']', instruction)
+        if quotes:
+            return quotes[0]
     
     # Look for known UI patterns
     for pattern in ui_patterns:
         if pattern.lower() in instruction_lower:
             return pattern
     
-    # Extract meaningful words (avoid common words)
-    words = [w for w in instruction.split() if w.lower() not in ['the', 'a', 'an', 'and', 'or', 'to', 'for', 'on', 'in', 'at']]
-    if len(words) > 2:
+    # Extract meaningful words
+    words = [w for w in instruction.split() if w.lower() not in ['the', 'a', 'an', 'and', 'or', 'to', 'for', 'on', 'in', 'at', 'click', 'select', 'go', 'navigate']]
+    if len(words) > 1:
         return ' '.join(words[-2:]).title()
+    elif words:
+        return words[-1].title()
     
-    return words[-1].title() if words else 'Next'
-
-
-def get_predefined_steps(user_query: str) -> List[Dict[str, str]]:
-    """
-    Fallback predefined steps based on query type.
-    """
-    query_lower = user_query.lower()
-    
-    if "register" in query_lower or "registration" in query_lower:
-        return [
-            {"instruction": "Go to MyFAU student portal", "target_text": "MyFAU"},
-            {"instruction": "Click on Student Self Service", "target_text": "Student Self Service"},
-            {"instruction": "Select Registration", "target_text": "Registration"},
-            {"instruction": "Click 'Register for Classes'", "target_text": "Register for Classes"},
-            {"instruction": "Search and add your courses", "target_text": "Search Classes"}
-        ]
-    elif "transcript" in query_lower:
-        return [
-            {"instruction": "Access Student Services", "target_text": "Student Services"},
-            {"instruction": "Go to Academic Records", "target_text": "Academic Records"},
-            {"instruction": "Request Official Transcript", "target_text": "Request Transcript"}
-        ]
-    elif "financial aid" in query_lower or "fafsa" in query_lower:
-        return [
-            {"instruction": "Visit Financial Aid section", "target_text": "Financial Aid"},
-            {"instruction": "Click Apply for Financial Aid", "target_text": "Apply for Aid"},
-            {"instruction": "Complete your FAFSA", "target_text": "FAFSA"}
-        ]
-    else:
-        return [
-            {"instruction": "Navigate to FAU homepage", "target_text": "Home"},
-            {"instruction": "Find Student Services", "target_text": "Student Services"},
-            {"instruction": "Look for relevant information", "target_text": "Search"}
-        ]
+    return 'Next'
 
 
 def get_fallback_steps(user_query: str) -> Dict[str, Any]:
     """
-    Provide fallback steps when knowledge base is unavailable.
+    Provide fallback steps based on query type.
     """
-    return {
-        "summary": f"General steps for: {user_query}",
-        "steps": [
-            {"instruction": "Visit the FAU website", "target_text": "FAU"},
-            {"instruction": "Navigate to Student Services", "target_text": "Student Services"},
-            {"instruction": "Find the relevant section for your query", "target_text": "Search"}
-        ]
-    }
+    query_lower = user_query.lower()
+    
+    if "register" in query_lower or "registration" in query_lower:
+        return {
+            "summary": "How to register for classes at FAU",
+            "steps": [
+                {"instruction": "Go to MyFAU portal", "target_text": "MyFAU"},
+                {"instruction": "Log in with your FAU credentials", "target_text": "Login"},
+                {"instruction": "Click Student Self Service", "target_text": "Student Self Service"},
+                {"instruction": "Select Registration from the menu", "target_text": "Registration"},
+                {"instruction": "Click Register for Classes", "target_text": "Register for Classes"}
+            ]
+        }
+    elif "tuition" in query_lower or ("pay" in query_lower and "tuition" in query_lower):
+        return {
+            "summary": "How to pay tuition at FAU",
+            "steps": [
+                {"instruction": "Go to MyFAU portal", "target_text": "MyFAU"},
+                {"instruction": "Log in with your FAU credentials", "target_text": "Login"},
+                {"instruction": "Click Student Self Service", "target_text": "Student Self Service"},
+                {"instruction": "Select Student Account", "target_text": "Student Account"},
+                {"instruction": "Click Make a Payment", "target_text": "Make a Payment"}
+            ]
+        }
+    elif "financial aid" in query_lower or "fafsa" in query_lower:
+        return {
+            "summary": "How to apply for financial aid at FAU",
+            "steps": [
+                {"instruction": "Go to FAU Financial Aid website", "target_text": "Financial Aid"},
+                {"instruction": "Click Apply for Aid", "target_text": "Apply for Aid"},
+                {"instruction": "Complete the FAFSA application", "target_text": "FAFSA"},
+                {"instruction": "Submit required documents", "target_text": "Submit Documents"}
+            ]
+        }
+    else:
+        return {
+            "summary": f"General guidance for: {user_query}",
+            "steps": [
+                {"instruction": "Go to the FAU website", "target_text": "FAU"},
+                {"instruction": "Use the search function to find information", "target_text": "Search"},
+                {"instruction": "Navigate to the relevant department page", "target_text": "Department"},
+                {"instruction": "Contact the office for specific assistance", "target_text": "Contact"}
+            ]
+        }
 
 
 def orchestrate(user_message: str) -> Dict[str, Any]:
     """
-    Main orchestration function. Tries LangGraph if available, otherwise uses FAU API.
+    Main orchestration function. Tries LangGraph if available, otherwise uses LLM directly.
     """
     print(f"\n{'='*60}")
     print(f"[DEBUG] 🚀 Orchestrate called with message: {user_message}")
@@ -289,33 +292,23 @@ def orchestrate(user_message: str) -> Dict[str, Any]:
                 parsed = json.loads(out)
                 return {"summary": parsed.get('summary', ''), "steps": parsed.get('steps', [])}
             except Exception as e:
-                print(f"[DEBUG] ❌ LangGraph failed: {e}, falling back to FAU API")
-                return orchestrate_via_knowledge_base(user_message)
+                print(f"[DEBUG] ❌ LangGraph failed: {e}, falling back to LLM")
+                return orchestrate_via_llm(user_message)
         else:
-            print("[DEBUG] ✓ No LangGraph detected, calling orchestrate_via_knowledge_base directly")
-            result = orchestrate_via_knowledge_base(user_message)
-            print(f"[DEBUG] ✅ Successfully got result from Knowledge Base")
-            print(f"[DEBUG] Result summary: {result.get('summary', 'N/A')}")
-            print(f"[DEBUG] Number of steps: {len(result.get('steps', []))}")
+            print("[DEBUG] ✓ No LangGraph detected, calling orchestrate_via_llm directly")
+            result = orchestrate_via_llm(user_message)
+            print(f"[DEBUG] ✅ Successfully got result from LLM")
             return result
             
     except Exception as e:
-        print(f"\n{'='*60}")
-        print(f"[DEBUG] ❌❌❌ CRITICAL ERROR in orchestrate")
-        print(f"[DEBUG] Error type: {type(e).__name__}")
-        print(f"[DEBUG] Error message: {e}")
-        import traceback
-        print(f"[DEBUG] Full traceback:\n{traceback.format_exc()}")
-        print(f"{'='*60}\n")
-        
-        print("[DEBUG] ⚠️ Using fallback response")
-        # Ultimate fallback for any error
+        print(f"[DEBUG] ❌❌❌ CRITICAL ERROR in orchestrate: {e}")
+        # Ultimate fallback
         return {
             "summary": "Steps to register for classes at FAU",
             "steps": [
                 {"instruction": "Go to the FAU Student Portal", "target_text": "Student Portal"},
-                {"instruction": "Click on 'Registration' or 'Student Services'", "target_text": "Registration"},
-                {"instruction": "Select 'Register for Classes'", "target_text": "Register for Classes"},
-                {"instruction": "Search and add your desired courses", "target_text": "Add Course"}
+                {"instruction": "Click on Registration", "target_text": "Registration"},
+                {"instruction": "Select Register for Classes", "target_text": "Register for Classes"},
+                {"instruction": "Search and add your courses", "target_text": "Add Course"}
             ]
         }
