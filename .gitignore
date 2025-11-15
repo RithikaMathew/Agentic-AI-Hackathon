@@ -1,5 +1,4 @@
 # Ignore backend environment file
-/backend/.env
 
 node_modules/
 popup/dist/
@@ -11,8 +10,7 @@ __pycache__/
 .venv/
 backend/.venv/
 # local secrets
-backend/.env
-*.env
+
 node_modules/
 dist/
 .DS_Store
