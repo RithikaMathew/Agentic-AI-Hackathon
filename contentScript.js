@@ -1167,15 +1167,18 @@
     const b = document.createElement('div'); 
     b.className = 'bubble';
     
+    // Format text with proper spacing and convert URLs to clickable links
+    let formattedText = text.replace(/\n/g, '<br>');
+    
     // Convert URLs to clickable links
     const urlRegex = /(https?:\/\/[^\s]+)/g;
-    if (text.match(urlRegex)) {
+    if (formattedText.match(urlRegex)) {
       // Text contains URLs - use innerHTML with sanitization
-      const safeText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      const safeText = formattedText.replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/&lt;br&gt;/g, '<br>');
       b.innerHTML = safeText.replace(urlRegex, '<a href="$1" target="_blank" style="color: inherit; text-decoration: underline;">$1</a>');
     } else {
-      // No URLs - use textContent for safety
-      b.textContent = text;
+      // No URLs - use innerHTML for line breaks
+      b.innerHTML = formattedText;
     }
     
     div.appendChild(b); 
@@ -1230,7 +1233,20 @@
     const container = chatWidget.querySelector('#fau-messages');
     
     if (savedMessages.length === 0) {
-      appendMessage('assistant', 'Hi! I\'m your FAU Assistant. Ask me anything about registering for classes, finding resources, or navigating the FAU website.');
+      // Create welcome message directly without calling appendMessage to avoid infinite loop
+      const div = document.createElement('div');
+      div.className = 'msg assistant';
+      const b = document.createElement('div'); 
+      b.className = 'bubble'; 
+      b.textContent = 'Hi! I\'m your FAU Assistant. Ask me anything about registering for classes, finding resources, or navigating the FAU website.';
+      div.appendChild(b); 
+      container.appendChild(div);
+      
+      // Save welcome message to localStorage
+      localStorage.setItem('fau-chat-messages', JSON.stringify([{ 
+        from: 'assistant', 
+        text: 'Hi! I\'m your FAU Assistant. Ask me anything about registering for classes, finding resources, or navigating the FAU website.' 
+      }]));
     } else {
       savedMessages.forEach(msg => {
         const div = document.createElement('div');
@@ -1299,29 +1315,111 @@
         
         // Check if this is a draft reply request
         if (msg.toLowerCase().includes('draft') && (msg.toLowerCase().includes('reply') || msg.toLowerCase().includes('email'))) {
-          // Send draft reply request
+          // Set drafting mode and store original email
+          localStorage.setItem('fau-drafting-mode', 'true');
+          localStorage.setItem('fau-original-email', msg);
+          
+          // Send draft reply request with chat history
+          const chatHistory = JSON.parse(localStorage.getItem('fau-chat-messages') || '[]');
           chrome.runtime.sendMessage({ 
             type: 'draft_reply', 
             emailText: msg,
-            userInstructions: msg 
+            userInstructions: JSON.stringify(chatHistory)
           }, (resp) => {
             if (resp && resp.reply) {
-              appendMessage('assistant', 'Here\'s your drafted reply:');
+              // Always show the response and add copy button
               appendMessage('assistant', resp.reply);
               
-              // Add copy button
+              // Add copy button immediately after response
               const container = chatWidget.querySelector('#fau-messages');
-              const copyBtn = document.createElement('button');
-              copyBtn.textContent = 'Copy Reply';
-              copyBtn.style.cssText = 'background:#0078d4;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin:8px 0;';
-              copyBtn.onclick = () => {
-                navigator.clipboard.writeText(resp.reply).then(() => {
-                  copyBtn.textContent = 'Copied!';
-                  setTimeout(() => copyBtn.textContent = 'Copy Reply', 2000);
-                });
-              };
-              container.appendChild(copyBtn);
-              container.scrollTop = container.scrollHeight;
+              if (container) {
+                const copyBtnDiv = document.createElement('div');
+                copyBtnDiv.style.cssText = 'text-align: center; margin: 12px 0; padding: 8px;';
+                copyBtnDiv.className = 'copy-reply-button-container';
+                
+                const copyBtn = document.createElement('button');
+                copyBtn.textContent = '📋 Copy Email Reply';
+                copyBtn.style.cssText = 'background: linear-gradient(135deg, #0078d4 0%, #106ebe 100%); color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; box-shadow: 0 2px 8px rgba(0,120,212,0.3); transition: all 0.2s;';
+                copyBtn.onmouseover = () => copyBtn.style.transform = 'translateY(-1px)';
+                copyBtn.onmouseout = () => copyBtn.style.transform = 'translateY(0)';
+                copyBtn.onclick = () => {
+                  navigator.clipboard.writeText(resp.reply).then(() => {
+                    copyBtn.textContent = '✅ Copied!';
+                    copyBtn.style.background = 'linear-gradient(135deg, #28a745 0%, #20c997 100%)';
+                    setTimeout(() => {
+                      copyBtn.textContent = '📋 Copy Email Reply';
+                      copyBtn.style.background = 'linear-gradient(135deg, #0078d4 0%, #106ebe 100%)';
+                    }, 2000);
+                  }).catch((err) => {
+                    console.error('[FAU Assistant] Copy failed:', err);
+                    copyBtn.textContent = '❌ Copy failed';
+                    setTimeout(() => copyBtn.textContent = '📋 Copy Email Reply', 2000);
+                  });
+                };
+                
+                copyBtnDiv.appendChild(copyBtn);
+                container.appendChild(copyBtnDiv);
+                container.scrollTop = container.scrollHeight;
+              }
+              
+              // Clear drafting mode if response doesn't ask for more info
+              if (!resp.reply.includes('?') && !resp.reply.toLowerCase().includes('need more') && !resp.reply.toLowerCase().includes('please provide')) {
+                localStorage.removeItem('fau-drafting-mode');
+                localStorage.removeItem('fau-original-email');
+              }
+            } else {
+              appendMessage('assistant', 'Error generating reply. Please try again.');
+            }
+          });
+        } else if (localStorage.getItem('fau-drafting-mode') === 'true') {
+          // User is in drafting mode, continue the conversation
+          const chatHistory = JSON.parse(localStorage.getItem('fau-chat-messages') || '[]');
+          chrome.runtime.sendMessage({ 
+            type: 'draft_reply', 
+            emailText: localStorage.getItem('fau-original-email') || '',
+            userInstructions: JSON.stringify(chatHistory)
+          }, (resp) => {
+            if (resp && resp.reply) {
+              // Always show the response and add copy button
+              appendMessage('assistant', resp.reply);
+              
+              // Add copy button immediately after response
+              const container = chatWidget.querySelector('#fau-messages');
+              if (container) {
+                const copyBtnDiv = document.createElement('div');
+                copyBtnDiv.style.cssText = 'text-align: center; margin: 12px 0; padding: 8px;';
+                copyBtnDiv.className = 'copy-reply-button-container';
+                
+                const copyBtn = document.createElement('button');
+                copyBtn.textContent = '📋 Copy Email Reply';
+                copyBtn.style.cssText = 'background: linear-gradient(135deg, #0078d4 0%, #106ebe 100%); color: white; border: none; padding: 12px 24px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; box-shadow: 0 2px 8px rgba(0,120,212,0.3); transition: all 0.2s;';
+                copyBtn.onmouseover = () => copyBtn.style.transform = 'translateY(-1px)';
+                copyBtn.onmouseout = () => copyBtn.style.transform = 'translateY(0)';
+                copyBtn.onclick = () => {
+                  navigator.clipboard.writeText(resp.reply).then(() => {
+                    copyBtn.textContent = '✅ Copied!';
+                    copyBtn.style.background = 'linear-gradient(135deg, #28a745 0%, #20c997 100%)';
+                    setTimeout(() => {
+                      copyBtn.textContent = '📋 Copy Email Reply';
+                      copyBtn.style.background = 'linear-gradient(135deg, #0078d4 0%, #106ebe 100%)';
+                    }, 2000);
+                  }).catch((err) => {
+                    console.error('[FAU Assistant] Copy failed:', err);
+                    copyBtn.textContent = '❌ Copy failed';
+                    setTimeout(() => copyBtn.textContent = '📋 Copy Email Reply', 2000);
+                  });
+                };
+                
+                copyBtnDiv.appendChild(copyBtn);
+                container.appendChild(copyBtnDiv);
+                container.scrollTop = container.scrollHeight;
+              }
+              
+              // Clear drafting mode if response doesn't ask for more info
+              if (!resp.reply.includes('?') && !resp.reply.toLowerCase().includes('need more') && !resp.reply.toLowerCase().includes('please provide')) {
+                localStorage.removeItem('fau-drafting-mode');
+                localStorage.removeItem('fau-original-email');
+              }
             } else {
               appendMessage('assistant', 'Error generating reply. Please try again.');
             }
