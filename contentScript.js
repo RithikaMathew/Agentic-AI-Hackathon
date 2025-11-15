@@ -48,11 +48,9 @@
           restoreChatMessages(state.chatMessages);
         }
         
-        // Only show steps if they were triggered by user interaction (not on page load)
-        // Check if there are actual chat messages indicating user interaction
-        const hasUserMessages = state.chatMessages && state.chatMessages.some(msg => msg.from === 'user');
-        if (steps.length > 0 && hasUserMessages) {
-          console.log('[FAU Assistant] Restored guidance state');
+        // Show steps if there are active steps (user is in middle of guidance)
+        if (steps.length > 0 && currentStepIndex >= 0 && currentStepIndex < steps.length) {
+          console.log('[FAU Assistant] Restored active guidance state');
           setTimeout(() => showCurrentStep(), 1000);
         }
       }
@@ -246,6 +244,24 @@
         font-weight: 600;
         font-size: 12px;
         opacity: 0.8;
+      }
+      
+      .fau-message-overlay .close-btn {
+        background: rgba(255, 255, 255, 0.2);
+        border: none;
+        color: white;
+        border-radius: 4px;
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .fau-message-overlay .close-btn:hover {
+        background: rgba(255, 255, 255, 0.3);
       }
       
       .fau-message-overlay .content {
@@ -832,7 +848,7 @@
     messageOverlay.innerHTML = `
       <div class="header">
         <div>📍 Step Guide</div>
-        <div>⋮⋮</div>
+        <button class="close-btn" id="fau-close-guide">✕</button>
       </div>
       <div class="content">
         <div>${stepInfo}${message}${uncertaintyNote}</div>
@@ -908,11 +924,13 @@
     });
 
     // Attach button handlers
+    const closeBtn = messageOverlay.querySelector('#fau-close-guide');
     const prevBtn = messageOverlay.querySelector('#fau-prev-btn');
     const skipBtn = messageOverlay.querySelector('#fau-skip-btn');
     const nextBtn = messageOverlay.querySelector('#fau-next-btn');
     const doneBtn = messageOverlay.querySelector('#fau-done-btn');
 
+    if (closeBtn) closeBtn.onclick = () => endGuidance();
     if (prevBtn) prevBtn.onclick = () => previousStep();
     if (skipBtn) skipBtn.onclick = () => skipStep();
     if (nextBtn) nextBtn.onclick = () => nextStep();
@@ -930,7 +948,7 @@
     messageOverlay.innerHTML = `
       <div class="header">
         <div>📍 Step Guide</div>
-        <div>⋮⋮</div>
+        <button class="close-btn" id="fau-close-guide">✕</button>
       </div>
       <div class="content">
         <div>${message}</div>
@@ -1004,10 +1022,12 @@
       document.body.style.userSelect = '';
     });
 
+    const closeBtn = messageOverlay.querySelector('#fau-close-guide');
     const prevBtn = messageOverlay.querySelector('#fau-prev-btn');
     const nextBtn = messageOverlay.querySelector('#fau-next-btn');
     const doneBtn = messageOverlay.querySelector('#fau-done-btn');
 
+    if (closeBtn) closeBtn.onclick = () => endGuidance();
     if (prevBtn) prevBtn.onclick = () => previousStep();
     if (nextBtn) nextBtn.onclick = () => nextStep();
     if (doneBtn) doneBtn.onclick = () => endGuidance();
@@ -1124,8 +1144,59 @@
 
   // ---------- In-page draggable/resizable chat widget ----------
   let chatWidget = null;
+  
+  // Global appendMessage function
+  function appendMessage(from, text) {
+    // Ensure chat widget exists
+    ensureChatWidget();
+    
+    const widget = document.getElementById('fau-assistant-chat');
+    if (!widget) {
+      console.error('[FAU Assistant] chatWidget not found, cannot append message');
+      return;
+    }
+    
+    const container = widget.querySelector('#fau-messages');
+    if (!container) {
+      console.error('[FAU Assistant] messages container not found');
+      return;
+    }
+    
+    const div = document.createElement('div');
+    div.className = 'msg ' + (from === 'user' ? 'user' : 'assistant');
+    const b = document.createElement('div'); 
+    b.className = 'bubble';
+    
+    // Convert URLs to clickable links
+    const urlRegex = /(https?:\/\/[^\s]+)/g;
+    if (text.match(urlRegex)) {
+      // Text contains URLs - use innerHTML with sanitization
+      const safeText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+      b.innerHTML = safeText.replace(urlRegex, '<a href="$1" target="_blank" style="color: inherit; text-decoration: underline;">$1</a>');
+    } else {
+      // No URLs - use textContent for safety
+      b.textContent = text;
+    }
+    
+    div.appendChild(b); 
+    container.appendChild(div); 
+    // Force scroll to bottom
+    container.scrollTop = container.scrollHeight;
+    setTimeout(() => {
+      container.scrollTop = container.scrollHeight;
+    }, 100);
+    
+    // Save to localStorage
+    const messages = JSON.parse(localStorage.getItem('fau-chat-messages') || '[]');
+    messages.push({ from, text });
+    localStorage.setItem('fau-chat-messages', JSON.stringify(messages.slice(-20)));
+    
+    console.log('[FAU Assistant] Message appended:', from, text);
+  }
   function ensureChatWidget() {
     if (document.getElementById('fau-assistant-chat')) return;
+    
+    try {
     const css = document.createElement('style');
     css.id = 'fau-assistant-chat-styles';
     css.textContent = `
@@ -1226,93 +1297,84 @@
         appendMessage('user', msg);
         inputField.value = '';
         
-        // Send message to background service worker to avoid mixed-content blocking
-        console.log('[FAU Assistant] Requesting orchestration from background');
-        chrome.runtime.sendMessage({ type: 'orchestrate', message: msg }, (resp) => {
-          if (chrome.runtime.lastError) {
-            console.error('[FAU Assistant] Runtime error:', chrome.runtime.lastError);
-            appendMessage('assistant', `Error: ${chrome.runtime.lastError.message}`);
-            return;
-          }
-          
-          if (!resp || !resp.ok) {
-            console.error('[FAU Assistant] Backend error:', resp && resp.error);
-            appendMessage('assistant', `Error contacting backend: ${resp && resp.error ? resp.error : 'no response'}`);
-            return;
-          }
-          
-          const data = resp.data;
-          console.log('[FAU Assistant] Backend response:', data);
-          
-          // Display summary
-          appendMessage('assistant', data.summary || 'Here are the steps');
-          
-          // Display numbered steps
-          if (Array.isArray(data.steps) && data.steps.length > 0) {
-            data.steps.forEach((s, i) => {
-              appendMessage('assistant', `${i + 1}. ${s.instruction || JSON.stringify(s)}`);
-            });
+        // Check if this is a draft reply request
+        if (msg.toLowerCase().includes('draft') && (msg.toLowerCase().includes('reply') || msg.toLowerCase().includes('email'))) {
+          // Send draft reply request
+          chrome.runtime.sendMessage({ 
+            type: 'draft_reply', 
+            emailText: msg,
+            userInstructions: msg 
+          }, (resp) => {
+            if (resp && resp.reply) {
+              appendMessage('assistant', 'Here\'s your drafted reply:');
+              appendMessage('assistant', resp.reply);
+              
+              // Add copy button
+              const container = chatWidget.querySelector('#fau-messages');
+              const copyBtn = document.createElement('button');
+              copyBtn.textContent = 'Copy Reply';
+              copyBtn.style.cssText = 'background:#0078d4;color:white;border:none;padding:6px 12px;border-radius:4px;cursor:pointer;margin:8px 0;';
+              copyBtn.onclick = () => {
+                navigator.clipboard.writeText(resp.reply).then(() => {
+                  copyBtn.textContent = 'Copied!';
+                  setTimeout(() => copyBtn.textContent = 'Copy Reply', 2000);
+                });
+              };
+              container.appendChild(copyBtn);
+              container.scrollTop = container.scrollHeight;
+            } else {
+              appendMessage('assistant', 'Error generating reply. Please try again.');
+            }
+          });
+        } else {
+          // Regular orchestration request
+          console.log('[FAU Assistant] Requesting orchestration from background');
+          chrome.runtime.sendMessage({ type: 'orchestrate', message: msg }, (resp) => {
+            if (chrome.runtime.lastError) {
+              console.error('[FAU Assistant] Runtime error:', chrome.runtime.lastError);
+              appendMessage('assistant', `Error: ${chrome.runtime.lastError.message}`);
+              return;
+            }
             
-            // Save chat messages
-            const messages = JSON.parse(localStorage.getItem('fau-chat-messages') || '[]');
-            messages.push({ from: 'user', text: msg });
-            messages.push({ from: 'assistant', text: data.summary || 'Here are the steps' });
-            data.steps.forEach((s, i) => {
-              messages.push({ from: 'assistant', text: `${i + 1}. ${s.instruction || JSON.stringify(s)}` });
-            });
-            localStorage.setItem('fau-chat-messages', JSON.stringify(messages.slice(-20))); // Keep last 20 messages
+            if (!resp || !resp.ok) {
+              console.error('[FAU Assistant] Backend error:', resp && resp.error);
+              appendMessage('assistant', `Error contacting backend: ${resp && resp.error ? resp.error : 'no response'}`);
+              return;
+            }
             
-            // Start automated guidance
-            startGuidance(data.steps);
-          }
-        });
+            const data = resp.data;
+            console.log('[FAU Assistant] Backend response:', data);
+            
+            // Display summary
+            appendMessage('assistant', data.summary || 'Here are the steps');
+            
+            // Display numbered steps
+            if (Array.isArray(data.steps) && data.steps.length > 0) {
+              data.steps.forEach((s, i) => {
+                appendMessage('assistant', `${i + 1}. ${s.instruction || JSON.stringify(s)}`);
+              });
+              
+              // Save chat messages
+              const messages = JSON.parse(localStorage.getItem('fau-chat-messages') || '[]');
+              messages.push({ from: 'user', text: msg });
+              messages.push({ from: 'assistant', text: data.summary || 'Here are the steps' });
+              data.steps.forEach((s, i) => {
+                messages.push({ from: 'assistant', text: `${i + 1}. ${s.instruction || JSON.stringify(s)}` });
+              });
+              localStorage.setItem('fau-chat-messages', JSON.stringify(messages.slice(-20))); // Keep last 20 messages
+              
+              // Start automated guidance
+              startGuidance(data.steps);
+            }
+          });
+        }
       });
     } else {
       console.error('[FAU Assistant] Chat widget elements not found');
     }
-
-    function appendMessage(from, text) {
-      if (!chatWidget) {
-        console.error('[FAU Assistant] chatWidget is null, cannot append message');
-        return;
-      }
-      
-      const container = chatWidget.querySelector('#fau-messages');
-      if (!container) {
-        console.error('[FAU Assistant] messages container not found');
-        return;
-      }
-      
-      const div = document.createElement('div');
-      div.className = 'msg ' + (from === 'user' ? 'user' : 'assistant');
-      const b = document.createElement('div'); 
-      b.className = 'bubble';
-      
-      // Convert URLs to clickable links
-      const urlRegex = /(https?:\/\/[^\s]+)/g;
-      if (text.match(urlRegex)) {
-        // Text contains URLs - use innerHTML with sanitization
-        const safeText = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        b.innerHTML = safeText.replace(urlRegex, '<a href="$1" target="_blank" style="color: inherit; text-decoration: underline;">$1</a>');
-      } else {
-        // No URLs - use textContent for safety
-        b.textContent = text;
-      }
-      
-      div.appendChild(b); 
-      container.appendChild(div); 
-      // Force scroll to bottom
-      container.scrollTop = container.scrollHeight;
-      setTimeout(() => {
-        container.scrollTop = container.scrollHeight;
-      }, 100);
-      
-      // Save to localStorage
-      const messages = JSON.parse(localStorage.getItem('fau-chat-messages') || '[]');
-      messages.push({ from, text });
-      localStorage.setItem('fau-chat-messages', JSON.stringify(messages.slice(-20)));
-      
-      console.log('[FAU Assistant] Message appended:', from, text);
+    
+    } catch (error) {
+      console.error('[FAU Assistant] Error creating chat widget:', error);
     }
   }
 
@@ -1322,15 +1384,17 @@
     if (w) w.style.display = 'flex';
   }
 
-  // Initialize on all pages (not just FAU)
-  // Wait for page to load before showing chat
+
+  
+
+
+  // Initialize on all pages
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
       initializeSession();
       setTimeout(() => showChat(), 500);
     });
   } else {
-    // Page already loaded
     initializeSession();
     setTimeout(() => showChat(), 500);
   }
