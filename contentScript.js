@@ -336,6 +336,10 @@
         if (el.classList.contains('fau-highlight')) return false;
         if (el.classList.contains('fau-highlight-uncertain')) return false;
         if (el.classList.contains('fau-message-overlay')) return false;
+        if (el.classList.contains('msg')) return false; // Chat messages
+        if (el.classList.contains('bubble')) return false; // Chat bubbles
+        if (el.classList.contains('messages')) return false; // Chat container
+        if (el.classList.contains('controls')) return false; // Chat controls
         
         // Check if element is inside or contains chat widget
         const chatWidget = document.getElementById('fau-assistant-chat');
@@ -367,14 +371,23 @@
 
     // Scoring system for flexible matching
     const scored = candidates.map(el => {
-      const text = getElementText(el).toLowerCase();
+      // CRITICAL: Replace element with clickable parent if element itself isn't clickable
+      let clickableEl = findClickableElement(el);
+      if (!clickableEl) {
+        // Skip elements that aren't clickable and have no clickable parent
+        return { element: el, score: -1000, text: '' };
+      }
+      
+      // Use the clickable element for scoring
+      const actualElement = clickableEl;
+      const text = getElementText(actualElement).toLowerCase();
       const normalizedText = text.replace(/-/g, ' ');
       const textWords = normalizedText.split(' ').filter(w => w.length > 2);
       
       let score = 0;
       
       // BONUS: Prefer actual buttons/links over parent containers
-      const tagName = el.tagName.toLowerCase();
+      const tagName = actualElement.tagName.toLowerCase();
       if (tagName === 'button' || tagName === 'a' || tagName === 'input') {
         score += 50; // Big bonus for actual interactive elements
       } else if (tagName === 'div' || tagName === 'span') {
@@ -382,7 +395,7 @@
       }
       
       // Penalty for elements with many children (likely a container, not a button)
-      const childCount = el.children ? el.children.length : 0;
+      const childCount = actualElement.children ? actualElement.children.length : 0;
       if (childCount > 3) {
         score -= 40; // Heavy penalty for elements with many children
       }
@@ -405,28 +418,34 @@
         }
       }
       
-      // STRICT: Require ALL words to match for multi-word targets to prevent false positives
-      if (targetWords.length > 1 && exactWordMatches < targetWords.length) {
-        score -= 100; // Heavy penalty for missing words
+      // More lenient: Only require majority of words to match
+      if (targetWords.length > 1 && exactWordMatches < Math.ceil(targetWords.length * 0.6)) {
+        score -= 50; // Moderate penalty for missing words
       }
       
-      // Check if this element matches any future step (prevent premature highlighting)
+      // SMART: Check if this element matches any future step (prioritize future steps)
       if (steps && currentStepIndex < steps.length - 1) {
-        for (let i = currentStepIndex + 1; i < steps.length; i++) {
+        for (let i = currentStepIndex + 1; i < Math.min(currentStepIndex + 3, steps.length); i++) {
           const futureStep = steps[i];
           const futureTarget = (futureStep.target_text || futureStep.targetText || futureStep.target || '').toLowerCase();
           if (futureTarget && futureTarget.length > 3) {
-            // Check if this element is a better match for a future step
             const normalizedFutureTarget = futureTarget.replace(/-/g, ' ');
             const futureWords = normalizedFutureTarget.split(' ').filter(w => w.length > 2);
+            
+            // Count how many words match the future target
             let futureMatches = 0;
             for (const word of futureWords) {
               if (normalizedText.includes(word)) futureMatches++;
             }
-            // If this matches more words from future step than current step, penalize heavily
-            if (futureMatches > exactWordMatches || (futureMatches === futureWords.length && normalizedFutureTarget !== normalizedTarget)) {
-              score -= 300;
-              console.log(`[FAU Assistant] Rejecting "${text}" - better match for future step ${i + 1}: "${futureTarget}"`);
+            
+            // If this element is a better match for future step, BOOST it and mark for step skip
+            const futureMatchRatio = futureWords.length > 0 ? futureMatches / futureWords.length : 0;
+            const currentMatchRatio = targetWords.length > 0 ? exactWordMatches / targetWords.length : 0;
+            
+            if (futureMatchRatio > currentMatchRatio && futureMatchRatio >= 0.7) {
+              score += 150; // BOOST future step matches
+              actualElement._futureStepIndex = i; // Mark which future step this matches
+              console.log(`[FAU Assistant] BOOSTING "${text}" - better match for future step ${i + 1}: "${futureTarget}"`);
             }
           }
         }
@@ -443,20 +462,31 @@
       // Penalty for very long text (likely not a button)
       if (normalizedText.length > 50) score -= 15;
       
-      return { element: el, score, text };
-    }).filter(item => item.score > 50) // Higher threshold to prevent false matches
+      return { element: actualElement, score, text };
+    }).filter(item => item.score > 20) // Lower threshold to include more candidates
       .sort((a, b) => b.score - a.score);
 
     if (scored.length > 0) {
       const best = scored[0];
       console.log(`[FAU Assistant] BEST MATCH (score: ${best.score}):`, best.text);
       
-      // Check if uncertain: low score OR multiple similar candidates
-      const isUncertain = best.score < CONFIG.uncertainScoreThreshold || scored.length > 2;
+      // Check if best match is for a future step
+      if (best.element._futureStepIndex !== undefined) {
+        console.log(`[FAU Assistant] 🚀 SKIPPING to future step ${best.element._futureStepIndex + 1}`);
+        return {
+          elements: [best.element],
+          isUncertain: false,
+          isMultiple: false,
+          skipToStep: best.element._futureStepIndex // Signal to skip steps
+        };
+      }
       
-      // If uncertain, return ALL similar candidates (within 30 points of best score)
+      // Check if uncertain: low score OR multiple similar candidates
+      const isUncertain = best.score < CONFIG.uncertainScoreThreshold || scored.length > 1;
+      
+      // If uncertain, return ALL similar candidates (within 40 points of best score)
       if (isUncertain && scored.length > 1) {
-        const similarCandidates = scored.filter(s => s.score >= best.score - 30);
+        const similarCandidates = scored.filter(s => s.score >= Math.max(20, best.score - 40)).slice(0, 5); // Max 5 elements
         console.log(`[FAU Assistant] 🟧 UNCERTAIN: Found ${similarCandidates.length} similar elements:`, 
           similarCandidates.map(s => `"${s.text}" (score: ${s.score})`));
         
@@ -507,6 +537,61 @@
            style.visibility !== 'hidden' &&
            style.opacity !== '0' &&
            el.offsetParent !== null;
+  }
+
+  // Helper: Check if element is clickable (has click handler or is naturally interactive)
+  function isElementClickable(el) {
+    if (!el) return false;
+    
+    const tagName = el.tagName.toLowerCase();
+    
+    // Naturally clickable elements
+    if (tagName === 'a' || tagName === 'button' || tagName === 'input') {
+      return true;
+    }
+    
+    // Elements with role="button" or role="link"
+    const role = el.getAttribute('role');
+    if (role === 'button' || role === 'link') {
+      return true;
+    }
+    
+    // Elements with onclick attribute
+    if (el.hasAttribute('onclick') || el.onclick) {
+      return true;
+    }
+    
+    // Check if element has cursor:pointer style
+    const style = window.getComputedStyle(el);
+    if (style.cursor === 'pointer') {
+      return true;
+    }
+    
+    return false;
+  }
+
+  // Helper: Find the closest clickable parent or the element itself
+  function findClickableElement(el) {
+    if (!el) return null;
+    
+    // If element itself is clickable, return it
+    if (isElementClickable(el)) {
+      return el;
+    }
+    
+    // Search up to 3 levels for a clickable parent
+    let current = el;
+    let levels = 0;
+    while (current && levels < 3) {
+      current = current.parentElement;
+      if (current && isElementClickable(current)) {
+        console.log(`[FAU Assistant] Found clickable parent: ${current.tagName}`);
+        return current;
+      }
+      levels++;
+    }
+    
+    return null; // No clickable element found
   }
 
   // Helper: Get all text from element including alt text and child images
@@ -601,6 +686,18 @@
       const elements = result.elements || [result.element || result];
       const isUncertain = result.isUncertain || false;
       const isMultiple = result.isMultiple || false;
+      const skipToStep = result.skipToStep;
+      
+      // If we found a better match for a future step, skip to that step
+      if (skipToStep !== undefined && skipToStep > currentStepIndex) {
+        console.log(`[FAU Assistant] 🚀 Skipping from step ${currentStepIndex + 1} to step ${skipToStep + 1}`);
+        currentStepIndex = skipToStep;
+        saveState();
+        
+        // Update message to reflect the new step
+        const newStep = steps[currentStepIndex];
+        message = `Step ${currentStepIndex + 1}/${steps.length}: ${newStep.instruction || newStep.text || message}`;
+      }
 
       // Apply appropriate highlight class to ALL matched elements
       elements.forEach((element, index) => {
