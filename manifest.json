@@ -2,9 +2,9 @@
   "manifest_version": 3,
   "name": "FAU Chat Assistant",
   "version": "0.1.0",
-  "description": "Chatbot popup that gives step-by-step guidance and highlights UI elements on fau.edu pages.",
+  "description": "Chatbot popup that gives step-by-step guidance and highlights UI elements on web pages.",
   "permissions": ["scripting", "activeTab", "tabs", "storage"],
-  "host_permissions": ["*://*.fau.edu/*"],
+  "host_permissions": ["<all_urls>"],
   "action": {
     "default_icon": {
       "16": "icons/icon.png",
@@ -22,7 +22,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.fau.edu/*"],
+      "matches": ["<all_urls>"],
       "js": ["contentScript.js"],
       "run_at": "document_idle"
     }
